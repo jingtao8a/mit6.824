@@ -24,11 +24,11 @@ const (
 )
 
 type Task struct {
-	taskType        int8
-	taskStaus       int8
-	taskId          int
-	inputFileNames  []string
-	outputFileNames []string
+	TaskType        int8
+	TaskStaus       int8
+	TaskID          int
+	InputFileNames  []string
+	OutputFileNames []string
 }
 
 const (
@@ -63,36 +63,36 @@ func (m *Master) GetTask(request *GetTaskRequest, response *GetTaskResponse) err
 	m.mux.Lock()
 	defer m.mux.Unlock()
 
-	(*response).NReduce = m.nReduce
-	var tasks []Task
+	response.NReduce = m.nReduce
+	var tasks *[]Task
 	if m.inCompleteMapTaskCount > 0 {
-		tasks = m.mapTaskList
+		tasks = &m.mapTaskList
 		//} else if m.inCompleteReduceTaskCount > 0 {
-		//tasks = m.reduceTaskList
+		//tasks = &m.reduceTaskList
 	} else {
 		//所有任务已经完成了
-		(*response).success = false
-		(*response).shouldExit = true
+		response.Success = false
+		response.ShouldExit = true
 		return nil
 	}
 
-	for _, task := range tasks {
-		if task.taskStaus == PendingTaskStatus {
-			(*response).task = task
-			(*response).NReduce = m.nReduce
-			(*response).success = true
-			(*response).shouldExit = false
+	for i := 0; i < len(*tasks); i++ {
+		if (*tasks)[i].TaskStaus == PendingTaskStatus {
+			response.Task = (*tasks)[i]
+			response.NReduce = m.nReduce
+			response.Success = true
+			response.ShouldExit = false
 			//pendingTaskStatus -> RunningTaskStatus
-			task.taskStaus = RunningTaskStatus
-			log.Println("assign mapTask")
+			(*tasks)[i].TaskStaus = RunningTaskStatus
+			log.Println("assign mapTask", response.Task.TaskID)
 			//需要添加task超时检测
 			//to do
 			return nil
 		}
 	}
 	//没有空闲的任务
-	(*response).success = false
-	(*response).shouldExit = false
+	response.Success = false
+	response.ShouldExit = false
 	return nil
 }
 
@@ -100,10 +100,10 @@ func (m *Master) CompleteTaskReq(request *CompleteTaskRequest, response *Complet
 	m.mux.Lock()
 	defer m.mux.Unlock()
 
-	switch request.task.taskType {
+	switch request.Task.TaskType {
 	case MapTaskType:
-		m.mapTaskList[request.task.taskId].taskStaus = CompleteTaskStatus
-		m.mapTaskList[request.task.taskId].outputFileNames = request.task.outputFileNames
+		m.mapTaskList[request.Task.TaskType].TaskStaus = CompleteTaskStatus
+		m.mapTaskList[request.Task.TaskType].OutputFileNames = request.Task.OutputFileNames
 		m.inCompleteMapTaskCount--
 		if m.inCompleteMapTaskCount == 0 {
 			m.phase = ReducePhase
@@ -121,7 +121,7 @@ func (m *Master) CompleteTaskReq(request *CompleteTaskRequest, response *Complet
 func (m *Master) initReduceTaskInput() {
 	reduceTasksInput := make([][]string, m.nReduce)
 	for _, task := range m.mapTaskList {
-		for _, fileName := range task.outputFileNames {
+		for _, fileName := range task.OutputFileNames {
 			tmp := strings.Split(fileName, "-")
 			reduceId, err := strconv.Atoi(tmp[2])
 			if err != nil {
@@ -132,7 +132,7 @@ func (m *Master) initReduceTaskInput() {
 	}
 
 	for reduceID, task := range m.reduceTaskList {
-		task.inputFileNames = reduceTasksInput[reduceID]
+		task.InputFileNames = reduceTasksInput[reduceID]
 	}
 }
 
@@ -178,19 +178,19 @@ func MakeMaster(files []string, nReduce int) *Master {
 	for i, file := range files {
 		m.mapTaskList = append(m.mapTaskList,
 			Task{
-				taskType:       MapTaskType,
-				taskStaus:      PendingTaskStatus,
-				taskId:         i,
-				inputFileNames: []string{file},
+				TaskType:       MapTaskType,
+				TaskStaus:      PendingTaskStatus,
+				TaskID:         i,
+				InputFileNames: []string{file},
 			})
 	}
 
 	for i := 0; i < nReduce; i++ {
 		m.reduceTaskList = append(m.reduceTaskList,
 			Task{
-				taskType:  ReduceTaskType,
-				taskStaus: PendingTaskStatus,
-				taskId:    i,
+				TaskType:  ReduceTaskType,
+				TaskStaus: PendingTaskStatus,
+				TaskID:    i,
 			})
 	}
 
