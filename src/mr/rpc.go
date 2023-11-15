@@ -26,16 +26,14 @@ type ExampleReply struct {
 type GetTaskRequest struct{}
 
 type GetTaskResponse struct {
-	TaskType   string
-	TaskID     int
-	TaskInputs []string
+	task       Task
 	NReduce    int
+	success    bool
+	shouldExit bool
 }
 
 type CompleteTaskRequest struct {
-	TaskType    string
-	TaskID      int
-	TaskOutputs []string
+	task Task
 }
 
 type CompleteTaskResponse struct{}
