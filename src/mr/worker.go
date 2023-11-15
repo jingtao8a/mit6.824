@@ -43,7 +43,7 @@ func saveKV(kvs []KeyValue, file *os.File) error {
 
 func resolveMapTask(mapf func(string, string) []KeyValue, getTaskRes GetTaskResponse) ([]string, error) {
 	log.Println("resolveMapTask exec")
-	fileName := getTaskRes.task.inputFileNames[0]
+	fileName := getTaskRes.Task.InputFileNames[0]
 	f, err := os.Open(fileName)
 	if err != nil {
 		log.Printf("can't open file %s", fileName)
@@ -62,7 +62,7 @@ func resolveMapTask(mapf func(string, string) []KeyValue, getTaskRes GetTaskResp
 	outputPaths := []string{}
 	uid := uuid.New().String()[:8]
 	for reduceID, kvs := range intermediateKVs {
-		interFileName := fmt.Sprintf("mr-%v-%v-%v", getTaskRes.task.taskId, reduceID, uid)
+		interFileName := fmt.Sprintf("mr-%v-%v-%v", getTaskRes.Task.TaskID, reduceID, uid)
 		f, err := os.Create(interFileName)
 		if err != nil {
 			log.Printf("create file %s fail", interFileName)
@@ -94,37 +94,33 @@ func Worker(mapf func(string, string) []KeyValue,
 	for {
 		getTaskReq := GetTaskRequest{}
 		getTaskRes := GetTaskResponse{}
-		log.Println("getTaskRes.success", getTaskRes.success)
-		log.Println("getTaskRes.NReduce", getTaskRes.NReduce)
-		log.Println("getTaskRes.shouldExit", getTaskRes.shouldExit)
+
 		call("Master.GetTask", &getTaskReq, &getTaskRes)
 		log.Println("call Master.GetTask")
-		//log.Println("getTaskRes.success", getTaskRes.success)
-		//log.Println("getTaskRes.NReduce", getTaskRes.NReduce)
-		//log.Println("getTaskRes.shouldExit", getTaskRes.shouldExit)
-		if getTaskRes.shouldExit {
+		log.Println(getTaskRes.Task.TaskID)
+		if getTaskRes.ShouldExit {
 			//所有task已经完成
 			log.Fatal("all task have finished, worker exit")
 		}
 
-		if !getTaskRes.success {
+		if !getTaskRes.Success {
 			//没有获得task 等待1000 ms之后继续getTask
 			time.Sleep(1000 * time.Millisecond)
-			log.Println("didn't get task")
+			log.Println("worker didn't get task")
 			continue
 		}
 
 		completeTaskRequest := CompleteTaskRequest{
-			task: getTaskRes.task,
+			Task: getTaskRes.Task,
 		}
 		completeTaskResponse := CompleteTaskResponse{}
-		switch getTaskRes.task.taskType {
+		switch getTaskRes.Task.TaskType {
 		case MapTaskType:
 			outputPaths, err := resolveMapTask(mapf, getTaskRes)
 			if err != nil {
 				continue
 			}
-			completeTaskRequest.task.outputFileNames = outputPaths
+			completeTaskRequest.Task.OutputFileNames = outputPaths
 			break
 		case ReduceTaskType:
 			resolveReduceTask(reducef, getTaskRes)
