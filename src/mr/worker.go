@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"sort"
 	"time"
 )
 import "log"
@@ -19,6 +20,12 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+type KeyValueArray []KeyValue
+
+func (a KeyValueArray) Len() int           { return len(a) }
+func (a KeyValueArray) Less(i, j int) bool { return a[i].Key < a[j].Key }
+func (a KeyValueArray) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -41,8 +48,19 @@ func saveKV(kvs []KeyValue, file *os.File) error {
 	return nil
 }
 
+func loadKV(kvs *[]KeyValue, file *os.File) error {
+	dec := json.NewDecoder(file)
+	for {
+		var kv KeyValue
+		if err := dec.Decode(&kv); err != nil {
+			break
+		}
+		*kvs = append(*kvs, kv)
+	}
+	return nil
+}
+
 func resolveMapTask(mapf func(string, string) []KeyValue, getTaskRes GetTaskResponse) ([]string, error) {
-	log.Println("resolveMapTask exec")
 	fileName := getTaskRes.Task.InputFileNames[0]
 	f, err := os.Open(fileName)
 	if err != nil {
@@ -50,6 +68,10 @@ func resolveMapTask(mapf func(string, string) []KeyValue, getTaskRes GetTaskResp
 		return nil, err
 	}
 	contents, err := ioutil.ReadAll(f)
+	if err != nil {
+		log.Printf("ioutil.ReadAll error %v", err)
+		return nil, err
+	}
 	kvs := mapf(fileName, string(contents))
 
 	intermediateKVs := make([][]KeyValue, getTaskRes.NReduce)
@@ -79,8 +101,43 @@ func resolveMapTask(mapf func(string, string) []KeyValue, getTaskRes GetTaskResp
 	return outputPaths, nil
 }
 
-func resolveReduceTask(reducef func(string, []string) string, getTaskRes GetTaskResponse) {
+func resolveReduceTask(reducef func(string, []string) string, getTaskRes GetTaskResponse) ([]string, error) {
+	kvs := []KeyValue{}
+	for _, file := range getTaskRes.Task.InputFileNames {
+		f, err := os.Open(file)
+		if err != nil {
+			log.Printf("cannot open file %v, err: %v", f, err)
+			return nil, err
+		}
+		err = loadKV(&kvs, f)
+		if err != nil {
+			return nil, err
+		}
+	}
 
+	sort.Sort(KeyValueArray(kvs))
+
+	outputPath := fmt.Sprintf("mr-out-%v", getTaskRes.Task.TaskID)
+
+	outputFile, err := os.Create(outputPath)
+	if err != nil {
+		return nil, err
+	}
+
+	defer outputFile.Close()
+	for i := 0; i < len(kvs); {
+		j := i + 1
+		for j < len(kvs) && kvs[j].Key == kvs[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kvs[k].Value)
+		}
+		fmt.Fprintf(outputFile, "%v %v\n", kvs[i].Key, reducef(kvs[i].Key, values))
+		i = j
+	}
+	return []string{outputPath}, nil
 }
 
 //
@@ -118,12 +175,18 @@ func Worker(mapf func(string, string) []KeyValue,
 		case MapTaskType:
 			outputPaths, err := resolveMapTask(mapf, getTaskRes)
 			if err != nil {
+				log.Printf("resolveMapTask fail, error %v", err)
 				continue
 			}
 			completeTaskRequest.Task.OutputFileNames = outputPaths
 			break
 		case ReduceTaskType:
-			resolveReduceTask(reducef, getTaskRes)
+			outputPaths, err := resolveReduceTask(reducef, getTaskRes)
+			if err != nil {
+				log.Printf("resolveReduceTask fail, error %v", err)
+				continue
+			}
+			completeTaskRequest.Task.OutputFileNames = outputPaths
 			break
 		default:
 			//assert never reach

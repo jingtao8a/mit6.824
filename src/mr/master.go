@@ -34,6 +34,7 @@ type Task struct {
 const (
 	MapPhase    int8 = 0
 	ReducePhase int8 = 1
+	donePhase   int8 = 3
 )
 
 type Master struct {
@@ -67,8 +68,8 @@ func (m *Master) GetTask(request *GetTaskRequest, response *GetTaskResponse) err
 	var tasks *[]Task
 	if m.inCompleteMapTaskCount > 0 {
 		tasks = &m.mapTaskList
-		//} else if m.inCompleteReduceTaskCount > 0 {
-		//tasks = &m.reduceTaskList
+	} else if m.inCompleteReduceTaskCount > 0 {
+		tasks = &m.reduceTaskList
 	} else {
 		//所有任务已经完成了
 		response.Success = false
@@ -84,7 +85,15 @@ func (m *Master) GetTask(request *GetTaskRequest, response *GetTaskResponse) err
 			response.ShouldExit = false
 			//pendingTaskStatus -> RunningTaskStatus
 			(*tasks)[i].TaskStaus = RunningTaskStatus
-			log.Println("assign mapTask", response.Task.TaskID)
+			switch (*tasks)[i].TaskType {
+			case MapTaskType:
+				log.Println("assign mapTask", response.Task.TaskID)
+				break
+			case ReduceTaskType:
+				log.Println("assign reduceTask", response.Task.TaskID)
+				break
+			}
+
 			//需要添加task超时检测
 			//to do
 			return nil
@@ -112,6 +121,12 @@ func (m *Master) CompleteTaskReq(request *CompleteTaskRequest, response *Complet
 
 		break
 	case ReduceTaskType:
+		m.reduceTaskList[request.Task.TaskID].TaskStaus = CompleteTaskStatus
+		m.reduceTaskList[request.Task.TaskID].OutputFileNames = request.Task.OutputFileNames
+		m.inCompleteReduceTaskCount--
+		if m.inCompleteReduceTaskCount == 0 {
+			m.phase = donePhase
+		}
 
 		break
 	}
@@ -119,6 +134,7 @@ func (m *Master) CompleteTaskReq(request *CompleteTaskRequest, response *Complet
 }
 
 func (m *Master) initReduceTaskInput() {
+	log.Println("initReduceTaskInput")
 	reduceTasksInput := make([][]string, m.nReduce)
 	for _, task := range m.mapTaskList {
 		for _, fileName := range task.OutputFileNames {
@@ -131,8 +147,8 @@ func (m *Master) initReduceTaskInput() {
 		}
 	}
 
-	for reduceID, task := range m.reduceTaskList {
-		task.InputFileNames = reduceTasksInput[reduceID]
+	for i := 0; i < m.nReduce; i++ {
+		m.reduceTaskList[i].InputFileNames = reduceTasksInput[i]
 	}
 }
 
@@ -160,7 +176,9 @@ func (m *Master) Done() bool {
 	ret := false
 
 	// Your code here.
-
+	if m.phase == donePhase {
+		ret = true
+	}
 	return ret
 }
 
