@@ -146,6 +146,7 @@ func resolveReduceTask(reducef func(string, []string) string, getTaskRes GetTask
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
+	log.SetOutput(ioutil.Discard)
 	log.Println("worker start")
 	// Your worker implementation here.
 	for {
