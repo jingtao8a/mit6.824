@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 import "net"
@@ -48,6 +49,8 @@ type Master struct {
 	mux                       sync.Mutex
 }
 
+const TaskTimeoutLimit = 10 * time.Second
+
 // Your code here -- RPC handlers for the worker to call.
 
 //
@@ -58,6 +61,16 @@ type Master struct {
 func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
+}
+
+func (m *Master) checkTaskTimeout(tasks *[]Task, i int) {
+	time.Sleep(TaskTimeoutLimit)
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	if (*tasks)[i].TaskStaus == CompleteTaskStatus {
+		return
+	}
+	(*tasks)[i].TaskStaus = PendingTaskStatus
 }
 
 func (m *Master) GetTask(request *GetTaskRequest, response *GetTaskResponse) error {
@@ -87,15 +100,15 @@ func (m *Master) GetTask(request *GetTaskRequest, response *GetTaskResponse) err
 			(*tasks)[i].TaskStaus = RunningTaskStatus
 			switch (*tasks)[i].TaskType {
 			case MapTaskType:
-				log.Println("assign mapTask", response.Task.TaskID)
+				//log.Println("assign mapTask", response.Task.TaskID)
 				break
 			case ReduceTaskType:
-				log.Println("assign reduceTask", response.Task.TaskID)
+				//log.Println("assign reduceTask", response.Task.TaskID)
 				break
 			}
 
 			//需要添加task超时检测
-			//to do
+			go m.checkTaskTimeout(tasks, i)
 			return nil
 		}
 	}
@@ -111,8 +124,8 @@ func (m *Master) CompleteTaskReq(request *CompleteTaskRequest, response *Complet
 
 	switch request.Task.TaskType {
 	case MapTaskType:
-		m.mapTaskList[request.Task.TaskType].TaskStaus = CompleteTaskStatus
-		m.mapTaskList[request.Task.TaskType].OutputFileNames = request.Task.OutputFileNames
+		m.mapTaskList[request.Task.TaskID].TaskStaus = CompleteTaskStatus
+		m.mapTaskList[request.Task.TaskID].OutputFileNames = request.Task.OutputFileNames
 		m.inCompleteMapTaskCount--
 		if m.inCompleteMapTaskCount == 0 {
 			m.phase = ReducePhase
@@ -134,7 +147,6 @@ func (m *Master) CompleteTaskReq(request *CompleteTaskRequest, response *Complet
 }
 
 func (m *Master) initReduceTaskInput() {
-	log.Println("initReduceTaskInput")
 	reduceTasksInput := make([][]string, m.nReduce)
 	for _, task := range m.mapTaskList {
 		for _, fileName := range task.OutputFileNames {
@@ -216,8 +228,8 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.inCompleteReduceTaskCount = nReduce
 	m.phase = MapPhase
 	m.server()
-	log.Println("Master m info")
-	log.Printf("m.mapTaskList  len:%d", len(m.mapTaskList))
-	log.Printf("m.reduceTaskList len:%d", len(m.reduceTaskList))
+	//log.Println("Master m info")
+	//log.Printf("m.mapTaskList  len:%d", len(m.mapTaskList))
+	//log.Printf("m.reduceTaskList len:%d", len(m.reduceTaskList))
 	return &m
 }
