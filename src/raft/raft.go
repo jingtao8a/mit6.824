@@ -77,34 +77,20 @@ type Raft struct {
 	//Persistent state on all servers
 	currentTerm int
 	voteFor     int
-	//log         []int
+	logs        LogEntries
 
 	//Volatile state on all servers
 	//正常情况下commitIndex和lastApplied应该是一样的，但是如果有一个新的提交，并且还未应用的话lastApplied应该要更小些
-	//commitIndex int //状态机中已知的被提交的日志条目的索引值（初始化为0，持续递增）
-	//lastApplied int //最后一个被追加到状态机日志的索引值
+	commitIndex int //状态机中已知的被提交的日志条目的索引值（初始化为0，持续递增）
+	lastApplied int //最后一个被追加到状态机日志的索引值
 	//
 	////Volatile state on leaders
-	//nextIndex  []int //对于每一个server，需要发送给他下一个日志条目的索引值
-	//matchIndex []int //对于每一个server，已经复制给该server的最后日志条目下标
+	nextIndex  []int //对于每一个server，需要发送给他下一个日志条目的索引值
+	matchIndex []int //对于每一个server，已经复制给该server的最后日志条目下标
 
 	//Additional properties
 	currentState      ServerState
 	electionTimeoutAt time.Time
-}
-
-type AppendEntriesArgs struct {
-	Term     int
-	LeaderId int
-	//PrevLogIndex int
-	//PrevLogTerm  int
-	//Entries      []int
-	//LeaderCommit int
-}
-
-type AppendEntriesReply struct {
-	Term    int
-	Success bool
 }
 
 // return currentTerm and whether this server
@@ -160,75 +146,6 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
-}
-
-//
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term        int
-	CandidateId int
-	//LastLogIndex int
-	//LastLogTerm  int
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term        int
-	VoteGranted bool
-}
-
-//
-// example RequestVote RPC handler.
-//
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	log.Printf("[RequestVote] Start: Server: %v, state: %v, current Term: %v, voteFor: %v, args: %+v", rf.me, rf.currentState, rf.currentTerm, rf.voteFor, args)
-	rf.checkTermOrUpdateState(args.Term)
-
-	reply.Term = rf.currentTerm
-	reply.VoteGranted = false
-
-	if args.Term < rf.currentTerm {
-		return
-	}
-
-	if rf.voteFor == -1 || rf.voteFor == args.CandidateId {
-		reply.VoteGranted = true
-		rf.voteFor = args.CandidateId
-	}
-	rf.resetElectionTimeout() //重置定时器
-	log.Printf("[RequestVote] Finish: Server: %v, state: %v, current Term: %v, voteFor: %v, args: %+v", rf.me, rf.currentState, rf.currentTerm, rf.voteFor, args)
-	return
-}
-
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	log.Printf("[AppendEntries] Before: Server: %v, state: %v, current Term: %v, voteFor: %v, args: %+v", rf.me, rf.currentState, rf.currentTerm, rf.voteFor, args)
-	rf.checkTermOrUpdateState(args.Term)
-
-	reply.Term = rf.currentTerm
-	reply.Success = false
-
-	if args.Term < rf.currentTerm {
-		return
-	}
-	if rf.currentState != Follower { // Candidate
-		rf.currentState = Follower
-	}
-	reply.Success = true
-	rf.resetElectionTimeout() //重置定时器
-	log.Printf("[AppendEntries] After: Server: %v, state: %v, current Term: %v, voteFor: %v, args: %+v", rf.me, rf.currentState, rf.currentTerm, rf.voteFor, args)
-	return
 }
 
 func (rf *Raft) checkTermOrUpdateState(term int) {
@@ -503,6 +420,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.currentTerm = 1
 	rf.voteFor = -1
+
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
 
 	rf.currentState = Follower
 	rf.resetElectionTimeout() //重置定时器
