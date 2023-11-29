@@ -444,11 +444,9 @@ func (rf *Raft) sendHeartbeat() {
 			}()
 			select {
 			case <-ch:
-				if reply.Success {
-					rf.mu.Lock()
-					heartbeatNums++
-					rf.mu.Unlock()
-				}
+				rf.mu.Lock()
+				heartbeatNums++
+				rf.mu.Unlock()
 				log.Println("finished")
 			case <-time.After(rpcTimeoutLimit):
 				log.Println("timeout")
