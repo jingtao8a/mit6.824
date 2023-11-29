@@ -16,10 +16,10 @@ type LogEntries []*LogEntry
 func (le *LogEntries) LastIndex() int { return len((*le)) - 1 }
 
 func (le *LogEntries) Get(i int) *LogEntry {
-	if i < 0 || i > le.LastIndex() {
-		return nil
+	if i <= le.LastIndex() {
+		return (*le)[i]
 	}
-	return (*le)[i]
+	return nil
 }
 
 func (le *LogEntries) Append(entry *LogEntry) {
