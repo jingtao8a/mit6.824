@@ -25,3 +25,7 @@ func (le *LogEntries) Get(i int) *LogEntry {
 func (le *LogEntries) Append(entry *LogEntry) {
 	(*le) = append((*le), entry)
 }
+
+func (le *LogEntries) GetLast() *LogEntry {
+	return le.Get(le.LastIndex())
+}
