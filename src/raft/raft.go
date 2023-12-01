@@ -57,7 +57,9 @@ const (
 	heartbeatInterval         = 120 * time.Millisecond
 	electionTimeoutLowerBound = 400
 	electionTimeoutUpperBound = 600
-	rpcTimeoutLimit           = 1000 * time.Millisecond
+	rpcTimeoutLimit           = 300 * time.Millisecond
+	checkAppliedInterval      = 150 * time.Millisecond
+	agreeLogInterval          = 150 * time.Millisecond
 )
 
 //
@@ -77,7 +79,7 @@ type Raft struct {
 	//Persistent state on all servers
 	currentTerm int
 	voteFor     int
-	logs        LogEntries
+	logs        LogEntries //start from index 1
 
 	//Volatile state on all servers
 	//正常情况下commitIndex和lastApplied应该是一样的，但是如果有一个新的提交，并且还未应用的话lastApplied应该要更小些
@@ -216,12 +218,16 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (2B).
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	index, term, isLeader := rf.logs.LastIndex()+1, rf.currentTerm, (rf.currentState == Leader)
+	if !isLeader {
+		return index, term, isLeader
+	}
+	rf.logs.Append(&LogEntry{Command: command, Term: term})
+	rf.nextIndex[rf.me] = rf.logs.LastIndex() + 1
+	rf.matchIndex[rf.me] = rf.logs.LastIndex()
 	return index, term, isLeader
 }
 
@@ -284,10 +290,14 @@ func (rf *Raft) electLeader() {
 	log.Printf("[electLeader] Server %v start election, state: %v, term: %v", rf.me, rf.currentState, rf.currentTerm)
 	successVoteNums := len(rf.peers)/2 + 1
 	voteNums := 1
+	rf.mu.Lock()
 	args := &RequestVoteArgs{
-		Term:        rf.currentTerm,
-		CandidateId: rf.me,
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: rf.logs.LastIndex(),
+		LastLogTerm:  rf.logs.GetLast().Term,
 	}
+	rf.mu.Unlock()
 	go func() {
 		for i := range rf.peers {
 			if i == rf.me {
@@ -317,7 +327,12 @@ func (rf *Raft) electLeader() {
 		rf.mu.Lock()
 		if rf.currentState == Candidate && voteNums >= successVoteNums { // 5.2
 			log.Printf("[electLeader] Server %v received the most vote, election success and become leader in term %v", rf.me, rf.currentTerm)
+			//Reinitialized after election
 			rf.currentState = Leader
+			for i := 0; i < len(rf.peers); i++ {
+				rf.nextIndex[i] = rf.logs.LastIndex() + 1
+				rf.matchIndex[i] = 0
+			}
 			isFinished = true
 		} else if rf.currentState == Follower { // 5.3
 			log.Printf("[electLeader] Server %v received the heartbeat from other server, stop election and become follower in term %v", rf.me, rf.currentTerm)
@@ -340,10 +355,6 @@ func (rf *Raft) sendHeartbeat() {
 
 	heartbeatNums := 1
 	heartbeatSuccessLimit := len(rf.peers)/2 + 1
-	args := &AppendEntriesArgs{
-		Term:     rf.currentTerm,
-		LeaderId: rf.me,
-	}
 
 	wg := sync.WaitGroup{}
 	wg.Add(len(rf.peers) - 1)
@@ -353,6 +364,19 @@ func (rf *Raft) sendHeartbeat() {
 		}
 		go func(serverID int) {
 			defer wg.Done()
+			args := &AppendEntriesArgs{
+				Term:         rf.currentTerm,
+				LeaderId:     rf.me,
+				PrevLogIndex: rf.nextIndex[serverID] - 1,
+				PrevLogTerm:  rf.logs.Get(rf.nextIndex[serverID] - 1).Term,
+				Entries:      LogEntries{},
+				LeaderCommit: rf.commitIndex,
+			}
+			//if last log index >= next index for a follower:
+			//send log entries starting at nextIndex
+			if rf.logs.LastIndex() >= rf.nextIndex[serverID] {
+				args.Entries = rf.logs[rf.nextIndex[serverID]:]
+			}
 			reply := &AppendEntriesReply{}
 			ch := make(chan struct{}, 1)
 			go func() {
@@ -363,6 +387,12 @@ func (rf *Raft) sendHeartbeat() {
 			case <-ch:
 				rf.mu.Lock()
 				heartbeatNums++
+				if reply.Success {
+					rf.matchIndex[serverID] = reply.ReplicatedIndex
+					rf.nextIndex[serverID] = reply.ReplicatedIndex + 1
+				} else if reply.LogInconsistent {
+					rf.nextIndex[serverID]--
+				}
 				rf.mu.Unlock()
 				log.Println("finished")
 			case <-time.After(rpcTimeoutLimit):
@@ -377,6 +407,63 @@ func (rf *Raft) sendHeartbeat() {
 		rf.currentState = Follower
 		rf.mu.Unlock()
 	}
+}
+
+func (rf *Raft) isMajorityNum(num int) bool {
+	return num > len(rf.peers)/2
+}
+
+func (rf *Raft) leaderAgreeLog() {
+	for {
+		time.Sleep(agreeLogInterval)
+		rf.mu.Lock()
+		if rf.currentState != Leader {
+			rf.mu.Unlock()
+			return
+		}
+		updatedCommitIndex := rf.commitIndex
+		for i := range rf.peers {
+			matchIndex := rf.matchIndex[i]
+			log.Printf("server[%v]: nextIndex %v, matchIndex %v", i, rf.nextIndex[i], rf.matchIndex[i])
+			if matchIndex <= rf.commitIndex {
+				continue
+			}
+			count := 0
+			for j := range rf.peers {
+				if rf.matchIndex[j] >= matchIndex {
+					count++
+				}
+			}
+			//If there exists an N such that N > commitIndex, a majority of matchIndex[i] >= N, and log[N].term == currentTerm: set commitIndex = N
+			if rf.isMajorityNum(count) && rf.logs.Get(matchIndex).Term == rf.currentTerm && matchIndex > updatedCommitIndex {
+				updatedCommitIndex = matchIndex
+			}
+		}
+		rf.commitIndex = updatedCommitIndex
+		log.Printf("[leaderAgreeLog] leader: %v, commitIndex: %v, term: %v, lastApplied: %v", rf.me, rf.commitIndex, rf.logs.Get(rf.commitIndex).Term, rf.lastApplied)
+		rf.mu.Unlock()
+	}
+}
+
+func (rf *Raft) apply(applyCh chan ApplyMsg) {
+	for {
+		time.Sleep(checkAppliedInterval)
+		rf.mu.Lock()
+		for rf.lastApplied < rf.commitIndex {
+			index := rf.lastApplied + 1
+			entry := rf.logs.Get(index)
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				Command:      entry.Command,
+				CommandIndex: index,
+			}
+			log.Printf("[apply] Server %v start to apply log %+v, message %+v", rf.me, entry, applyMsg)
+			applyCh <- applyMsg
+			rf.lastApplied++
+		}
+		rf.mu.Unlock()
+	}
+
 }
 
 func (rf *Raft) run() {
@@ -418,8 +505,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-	rf.currentTerm = 1
+	rf.currentTerm = 0
 	rf.voteFor = -1
+	rf.logs.Append(&LogEntry{Command: nil, Term: -1}) //添加一个空Command的log
 
 	rf.commitIndex = 0
 	rf.lastApplied = 0
@@ -434,6 +522,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	go rf.run()
-
+	go rf.leaderAgreeLog()
+	go rf.apply(applyCh)
 	return rf
 }
